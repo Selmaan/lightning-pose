@@ -14,12 +14,12 @@ from typeguard import typechecked
 # below are a bunch of classes that streamline data typechecking
 class BaseLabeledExampleDict(TypedDict):
     """Return type when calling __getitem__() on BaseTrackingDataset."""
-
     images: Union[
         TensorType["RGB":3, "image_height", "image_width", float],
         TensorType["frames", "RGB":3, "image_height", "image_width", float],
     ]
     keypoints: TensorType["num_targets", float]
+    bbox: TensorType["xyhw":4, float]
     idxs: int
     bbox: TensorType["xyhw":4, float]
 
@@ -31,20 +31,44 @@ class DynamicLabeledExampleDict(BaseLabeledExampleDict):
     bbox: List[TensorType["xyhw":4, float]]
 
 
+class DynamicLabeledExampleDict(BaseLabeledExampleDict):
+    """Return type when calling __getitem__() on DynamicDataset."""
+    keypoints: List[TensorType["num_targets", float]]
+    bbox: List[TensorType["xyhw":4, float]]
+
+
 class HeatmapLabeledExampleDict(BaseLabeledExampleDict):
     """Return type when calling __getitem__() on HeatmapTrackingDataset."""
+    heatmaps: TensorType["num_keypoints", "heatmap_height", "heatmap_width", float]
 
+
+class MultiviewLabeledExampleDict(TypedDict):
+    """Return type when calling __getitem__() on MultiviewDataset."""
+    images: Union[
+        TensorType["num_views", "RGB":3, "image_height", "image_width", float],
+        TensorType["num_views", "frames", "RGB":3, "image_height", "image_width", float],
+    ]
+    keypoints: TensorType["num_targets", float]
+    bbox: TensorType["num_views", "xyhw":4, float]
+    idxs: int
+    num_views: int
+    concat_order: List[str]
+    view_names: List[int]
+
+
+class MultiviewHeatmapLabeledExampleDict(MultiviewLabeledExampleDict):
+    """Return type when calling __getitem__() on MultiviewHeatmapDataset."""
     heatmaps: TensorType["num_keypoints", "heatmap_height", "heatmap_width", float]
 
 
 class BaseLabeledBatchDict(TypedDict):
     """Batch type for base labeled data."""
-
     images: Union[
         TensorType["batch", "RGB":3, "image_height", "image_width", float],
         TensorType["batch", "frames", "RGB":3, "image_height", "image_width", float],
     ]
     keypoints: TensorType["batch", "num_targets", float]
+    bbox: TensorType["batch", "xyhw":4, float]
     idxs: TensorType["batch", int]
     bbox: TensorType["batch", "xyhw":4, float]
 
@@ -56,15 +80,38 @@ class DynamicLabeledBatchDict(BaseLabeledBatchDict):
     bbox: List[List[TensorType["xyhw":4, float]]]
 
 
+class DynamicLabeledBatchDict(BaseLabeledBatchDict):
+    """Batch type for dynamic labeled data."""
+    keypoints: List[List[TensorType["num_targets", float]]]  # list over batch then over instances
+    bbox: List[List[TensorType["xyhw":4, float]]]
+
+
 class HeatmapLabeledBatchDict(BaseLabeledBatchDict):
     """Batch type for heatmap labeled data."""
+    heatmaps: TensorType["batch", "num_keypoints", "heatmap_height", "heatmap_width", float]
 
+
+class MultiviewLabeledBatchDict(TypedDict):
+    """Batch type for multiview labeled data."""
+    images: Union[
+        TensorType["batch", "num_views", "RGB":3, "image_height", "image_width", float],
+        TensorType["batch", "num_views", "frames", "RGB":3, "image_height", "image_width", float],
+    ]
+    keypoints: TensorType["batch", "num_views", "num_targets", float]
+    bbox: TensorType["batch", "num_views", "xyhw":4, float]
+    idxs: TensorType["batch", int]
+    num_views: TensorType["batch", int]
+    concat_order: List[List[str]]
+    view_names: List[List[int]]
+
+
+class MultiviewHeatmapLabeledBatchDict(MultiviewLabeledBatchDict):
+    """Batch type for multiview heatmap labeled data."""
     heatmaps: TensorType["batch", "num_keypoints", "heatmap_height", "heatmap_width", float]
 
 
 class UnlabeledBatchDict(TypedDict):
     """Batch type for unlabeled data."""
-
     frames: Union[
         TensorType["seq_len", "RGB":3, "image_height", "image_width", float],
         TensorType["seq_len", "context":5, "RGB":3, "image_height", "image_width", float],

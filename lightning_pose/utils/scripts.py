@@ -17,7 +17,11 @@ from typeguard import typechecked
 from lightning_pose.callbacks import AnnealWeight
 from lightning_pose.data.augmentations import imgaug_transform
 from lightning_pose.data.datamodules import BaseDataModule, UnlabeledDataModule
-from lightning_pose.data.datasets import BaseTrackingDataset, HeatmapDataset
+from lightning_pose.data.datasets import (
+    BaseTrackingDataset,
+    HeatmapDataset,
+    MultiviewHeatmapDataset,
+)
 from lightning_pose.data.utils import compute_num_train_frames, split_sizes_from_probabilities
 from lightning_pose.losses.factory import LossFactory
 from lightning_pose.metrics import (
@@ -63,25 +67,42 @@ def get_imgaug_transform(cfg: DictConfig) -> iaa.Sequential:
 @typechecked
 def get_dataset(
     cfg: DictConfig, data_dir: str, imgaug_transform: iaa.Sequential
-) -> Union[BaseTrackingDataset, HeatmapDataset]:
+) -> Union[BaseTrackingDataset, HeatmapDataset, MultiviewHeatmapDataset]:
     """Create a dataset that contains labeled data."""
 
     if cfg.model.model_type == "regression":
-        dataset = BaseTrackingDataset(
-            root_directory=data_dir,
-            csv_path=cfg.data.csv_file,
-            imgaug_transform=imgaug_transform,
-            do_context=False,  # no context for regression models
-        )
+        if cfg.data.get("view_names", None) and len(cfg.data.view_names) > 1:
+            raise NotImplementedError("Multi-view support only available for heatmap-based models")
+        else:
+            dataset = BaseTrackingDataset(
+                root_directory=data_dir,
+                csv_path=cfg.data.csv_file,
+                imgaug_transform=imgaug_transform,
+                do_context=False,  # no context for regression models
+            )
     elif cfg.model.model_type == "heatmap" or cfg.model.model_type == "heatmap_mhcrnn":
-        dataset = HeatmapDataset(
-            root_directory=data_dir,
-            csv_path=cfg.data.csv_file,
-            imgaug_transform=imgaug_transform,
-            downsample_factor=cfg.data.downsample_factor,
-            do_context=cfg.model.model_type == "heatmap_mhcrnn",  # context only for mhcrnn
-            uniform_heatmaps=cfg.training.get("uniform_heatmaps_for_nan_keypoints", False),
-        )
+        if cfg.data.get("view_names", None) and len(cfg.data.view_names) > 1:
+            UserWarning("No precautions regarding the size of the images were considered here, \
+                        images will be resized accordingly to configs!")
+            dataset = MultiviewHeatmapDataset(
+                root_directory=data_dir,
+                csv_paths=cfg.data.csv_file,
+                view_names=cfg.data.view_names,
+                downsample_factor=cfg.data.downsample_factor,
+                imgaug_transform=imgaug_transform,
+                uniform_heatmaps=cfg.training.get("uniform_heatmaps_for_nan_keypoints", False),
+                delimiter=cfg.data.get("image_delimiter", 'img')
+            )
+        else:
+            dataset = HeatmapDataset(
+                root_directory=data_dir,
+                csv_path=cfg.data.csv_file,
+                imgaug_transform=imgaug_transform,
+                downsample_factor=cfg.data.downsample_factor,
+                do_context=cfg.model.model_type == "heatmap_mhcrnn",  # context only for mhcrnn
+                uniform_heatmaps=cfg.training.get("uniform_heatmaps_for_nan_keypoints", False),
+            )
+
     else:
         raise NotImplementedError("%s is an invalid cfg.model.model_type" % cfg.model.model_type)
 
@@ -91,7 +112,7 @@ def get_dataset(
 @typechecked
 def get_data_module(
     cfg: DictConfig,
-    dataset: Union[BaseTrackingDataset, HeatmapDataset],
+    dataset: Union[BaseTrackingDataset, HeatmapDataset, MultiviewHeatmapDataset],
     video_dir: Optional[str] = None,
 ) -> Union[BaseDataModule, UnlabeledDataModule]:
     """Create a data module that splits a dataset into train/val/test iterators."""
@@ -99,9 +120,7 @@ def get_data_module(
     semi_supervised = check_if_semi_supervised(cfg.model.losses_to_use)
     if not semi_supervised:
         if not (cfg.training.gpu_id, int):
-            raise NotImplementedError(
-                "Cannot currently fit fully supervised model on multiple gpus"
-            )
+            raise NotImplementedError("Cannot fit fully supervised model on multiple gpus")
         data_module = BaseDataModule(
             dataset=dataset,
             train_batch_size=cfg.training.train_batch_size,
@@ -115,9 +134,7 @@ def get_data_module(
         )
     else:
         if not (cfg.training.gpu_id, int):
-            raise NotImplementedError(
-                "Cannot currently fit semi-supervised model on multiple gpus"
-            )
+            raise NotImplementedError("Cannot fit semi-supervised model on multiple gpus")
         data_module = UnlabeledDataModule(
             dataset=dataset,
             video_paths_list=video_dir,
@@ -167,6 +184,10 @@ def get_loss_factories(
                         "HeatmapTracker. \nYou specified a RegressionTracker model."
                     )
                 # record original image dims (after initial resizing)
+                raise Exception(
+                    "need to update unimodal and/or temporal heatmap loss to not use "
+                    "cfg.data.image_resize_dims, which has been deprecated."
+                )
                 height_og = cfg.data.image_resize_dims.height
                 width_og = cfg.data.image_resize_dims.width
                 loss_params_dict["unsupervised"][loss_name][
@@ -228,22 +249,27 @@ def get_model(
         if image_h != image_w:
             raise RuntimeError("ViT model requires resized height and width to be equal")
 
+    backbone_pretrained = cfg.model.get("backbone_pretrained", True)
     if not semi_supervised:
         if cfg.model.model_type == "regression":
             model = RegressionTracker(
                 num_keypoints=cfg.data.num_keypoints,
                 loss_factory=loss_factories["supervised"],
                 backbone=cfg.model.backbone,
+                pretrained=backbone_pretrained,
                 torch_seed=cfg.training.rng_seed_model_pt,
                 lr_scheduler=lr_scheduler,
                 lr_scheduler_params=lr_scheduler_params,
                 image_size=image_h,  # only used by ViT
             )
         elif cfg.model.model_type == "heatmap":
+
             model = HeatmapTracker(
                 num_keypoints=cfg.data.num_keypoints,
+                num_targets=data_module.dataset.num_targets,
                 loss_factory=loss_factories["supervised"],
                 backbone=cfg.model.backbone,
+                pretrained=backbone_pretrained,
                 downsample_factor=cfg.data.downsample_factor,
                 output_shape=data_module.dataset.output_shape,
                 torch_seed=cfg.training.rng_seed_model_pt,
@@ -256,6 +282,7 @@ def get_model(
                 num_keypoints=cfg.data.num_keypoints,
                 loss_factory=loss_factories["supervised"],
                 backbone=cfg.model.backbone,
+                pretrained=backbone_pretrained,
                 downsample_factor=cfg.data.downsample_factor,
                 output_shape=data_module.dataset.output_shape,
                 torch_seed=cfg.training.rng_seed_model_pt,
@@ -276,6 +303,7 @@ def get_model(
                 loss_factory=loss_factories["supervised"],
                 loss_factory_unsupervised=loss_factories["unsupervised"],
                 backbone=cfg.model.backbone,
+                pretrained=backbone_pretrained,
                 torch_seed=cfg.training.rng_seed_model_pt,
                 lr_scheduler=lr_scheduler,
                 lr_scheduler_params=lr_scheduler_params,
@@ -288,6 +316,7 @@ def get_model(
                 loss_factory=loss_factories["supervised"],
                 loss_factory_unsupervised=loss_factories["unsupervised"],
                 backbone=cfg.model.backbone,
+                pretrained=backbone_pretrained,
                 downsample_factor=cfg.data.downsample_factor,
                 output_shape=data_module.dataset.output_shape,
                 torch_seed=cfg.training.rng_seed_model_pt,
@@ -301,6 +330,7 @@ def get_model(
                 loss_factory=loss_factories["supervised"],
                 loss_factory_unsupervised=loss_factories["unsupervised"],
                 backbone=cfg.model.backbone,
+                pretrained=backbone_pretrained,
                 downsample_factor=cfg.data.downsample_factor,
                 output_shape=data_module.dataset.output_shape,
                 torch_seed=cfg.training.rng_seed_model_pt,
@@ -310,9 +340,7 @@ def get_model(
             )
         else:
             raise NotImplementedError(
-                f"{cfg.model.model_type} is an invalid cfg.model.model_type for a semi-supervised "
-                f"model"
-            )
+                f"{cfg.model.model_type} invalid cfg.model.model_type for a semi-supervised model")
 
     # load weights from user-provided checkpoint path
     if cfg.model.get("checkpoint", None):
@@ -357,7 +385,7 @@ def get_callbacks(
     if lr_monitor:
         lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval="epoch")
         callbacks.append(lr_monitor)
-    if ckpt_model:
+    if ckpt_model and early_stopping:  # model auto-saved at end if not early stopping
         ckpt_callback = pl.callbacks.model_checkpoint.ModelCheckpoint(
             monitor="val_supervised_loss"
         )
@@ -396,7 +424,7 @@ def calculate_train_batches(
 
     """
     if cfg.training.get("limit_train_batches", None) is None:
-        # TODO: small bit of redundant code from datamodule
+        # NOTE: small bit of redundant code from datamodule
         datalen = dataset.__len__()
         data_splits_list = split_sizes_from_probabilities(
             datalen,
@@ -420,15 +448,37 @@ def compute_metrics(
     preds_file: str,
     data_module: Optional[Union[BaseDataModule, UnlabeledDataModule]] = None,
 ) -> None:
-    """Compute various metrics on predictions csv file."""
+    """Compute various metrics on predictions csv file, potentially for multiple views."""
+    if cfg.data.get("view_names", None) and len(cfg.data.view_names) > 1:
+        for view_name, csv_file in zip(cfg.data.view_names, cfg.data.csv_file):
+            labels_file = return_absolute_path(os.path.join(cfg.data.data_dir, csv_file))
+            preds_file_ = preds_file.replace(".csv", f"_{view_name}.csv")
+            compute_metrics_single(
+                cfg=cfg,
+                labels_file=labels_file,
+                preds_file=preds_file_,
+                data_module=data_module,
+            )
+    else:
+        labels_file = return_absolute_path(os.path.join(cfg.data.data_dir, cfg.data.csv_file))
+        compute_metrics_single(
+            cfg=cfg, labels_file=labels_file, preds_file=preds_file, data_module=data_module,
+        )
+
+
+@typechecked
+def compute_metrics_single(
+    cfg: DictConfig,
+    labels_file: str,
+    preds_file: str,
+    data_module: Optional[Union[BaseDataModule, UnlabeledDataModule]] = None,
+) -> None:
+    """Compute various metrics on a predictions csv file from a single view."""
 
     # get keypoint names
-    labels_file = return_absolute_path(
-        os.path.join(cfg["data"]["data_dir"], cfg["data"]["csv_file"]))
     labels_df = pd.read_csv(labels_file, header=[0, 1, 2], index_col=0)
     keypoint_names = get_keypoint_names(
         cfg, csv_file=labels_file, header_rows=[0, 1, 2])
-
     # load predictions
     pred_df = pd.read_csv(preds_file, header=[0, 1, 2], index_col=0)
     if pred_df.keys()[-1][0] == "set":
@@ -500,7 +550,7 @@ def compute_metrics(
         # re-fit pca on the labeled data to get params
         pca()
         # compute reprojection error
-        pcasv_error_per_keypoint = pca_singleview_reprojection_error(keypoints_pred, pca, cfg)
+        pcasv_error_per_keypoint = pca_singleview_reprojection_error(keypoints_pred, pca)
         pcasv_df = pd.DataFrame(pcasv_error_per_keypoint, index=index, columns=keypoint_names)
         # add train/val/test split
         if set is not None:
@@ -520,7 +570,7 @@ def compute_metrics(
         # re-fit pca on the labeled data to get params
         pca()
         # compute reprojection error
-        pcamv_error_per_keypoint = pca_multiview_reprojection_error(keypoints_pred, pca, cfg)
+        pcamv_error_per_keypoint = pca_multiview_reprojection_error(keypoints_pred, pca)
         pcamv_df = pd.DataFrame(pcamv_error_per_keypoint, index=index, columns=keypoint_names)
         # add train/val/test split
         if set is not None:

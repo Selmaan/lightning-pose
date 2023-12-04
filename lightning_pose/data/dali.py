@@ -1,5 +1,6 @@
 """Data pipelines based on efficient video reading by nvidia dali package."""
 
+import os
 from typing import Dict, List, Literal, Optional, Union
 
 import numpy as np
@@ -160,9 +161,8 @@ class LitDaliWrapper(DALIGenericIterator):
         # get frame size, order is seq_len,H,W,C
         height = batch[0]["frame_size"][0, 1]
         width = batch[0]["frame_size"][0, 2]
-        bbox = torch.tensor([0, 0, height, width],
-                            device=frames.device).repeat((frames.shape[0], 1))
-
+        bbox = torch.tensor([0, 0, height, width], device=frames.device).repeat(
+            (frames.shape[0], 1))
         return UnlabeledBatchDict(frames=frames, transforms=transforms, bbox=bbox)
 
     def __next__(self) -> UnlabeledBatchDict:
@@ -175,9 +175,6 @@ class PrepareDALI(object):
 
     Big picture: this will initialize the pipes and dataloaders for both training and prediction.
 
-    TODO: make sure the order of args when you mix is valid.
-    TODO: consider changing LightningWrapper args from num_batches to num_iter
-
     """
 
     def __init__(
@@ -189,6 +186,12 @@ class PrepareDALI(object):
         dali_config: Union[dict, DictConfig] = None,
         imgaug: Optional[str] = "default",
     ) -> None:
+
+        # make sure `filenames` is a list of existing video files
+        for vid in filenames:
+            if not os.path.exists(vid) or not os.path.isfile(vid):
+                raise FileNotFoundError(f"{vid} is not a video file!")
+
         self.train_stage = train_stage
         self.model_type = model_type
         self.resize_dims = resize_dims
@@ -213,8 +216,7 @@ class PrepareDALI(object):
                 # non-full batch. we prefer having fewer batches but valid.
                 return int(
                     np.floor(
-                        self.frame_count
-                        / (pipe_dict["batch_size"] * pipe_dict["sequence_length"])
+                        self.frame_count / (pipe_dict["batch_size"] * pipe_dict["sequence_length"])
                     )
                 )
             elif (pipe_dict["batch_size"] == 1) and (
@@ -228,14 +230,10 @@ class PrepareDALI(object):
                         "cfg.dali.context.predict.sequence_length to be > 4"
                     )
                 # remove the first sequence
-                data_except_first_batch = (
-                    self.frame_count - pipe_dict["sequence_length"]
-                )
+                data_except_first_batch = self.frame_count - pipe_dict["sequence_length"]
                 # calculate how many "step"s are needed to get at least to the end
                 # count back the first sequence
-                num_iters = (
-                    int(np.ceil(data_except_first_batch / pipe_dict["step"])) + 1
-                )
+                num_iters = int(np.ceil(data_except_first_batch / pipe_dict["step"])) + 1
                 return num_iters
             else:
                 raise NotImplementedError

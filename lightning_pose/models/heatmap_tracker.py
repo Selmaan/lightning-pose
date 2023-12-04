@@ -14,6 +14,7 @@ from typing_extensions import Literal
 
 from lightning_pose.data.utils import (
     HeatmapLabeledBatchDict,
+    MultiviewHeatmapLabeledBatchDict,
     UnlabeledBatchDict,
     evaluate_heatmaps_at_location,
     undo_affine_transform,
@@ -51,6 +52,7 @@ class HeatmapTracker(BaseSupervisedTracker):
     def __init__(
         self,
         num_keypoints: int,
+        num_targets: int = None,
         loss_factory: Optional[LossFactory] = None,
         backbone: ALLOWED_BACKBONES = "resnet50",
         downsample_factor: Literal[1, 2, 3] = 2,
@@ -89,7 +91,10 @@ class HeatmapTracker(BaseSupervisedTracker):
             **kwargs,
         )
         self.num_keypoints = num_keypoints
-        self.num_targets = num_keypoints * 2
+        if num_targets is None:
+            self.num_targets = num_keypoints * 2
+        else:
+            self.num_targets = num_targets
         self.loss_factory = loss_factory
         # TODO: downsample_factor may be in mismatch between datamodule and model.
         self.downsample_factor = downsample_factor
@@ -145,7 +150,13 @@ class HeatmapTracker(BaseSupervisedTracker):
         elif self.downsample_factor == 3:
             preds -= 2.5
 
-        return preds.reshape(-1, self.num_targets), confidences
+        # NOTE: we cannot use
+        # `preds.reshape(-1, self.num_targets)`
+        # This works fine for the non-multiview case
+        # This works fine for multiview training
+        # This fails during multiview inference when we might have an arbitrary number of views
+        # that we are processing (self.num_targets is tied to the labeled data)
+        return preds.reshape(-1, heatmaps.shape[1] * 2), confidences
 
     def run_hard_argmax(
         self,
@@ -196,11 +207,10 @@ class HeatmapTracker(BaseSupervisedTracker):
 
     def initialize_upsampling_layers(self) -> None:
         """Intialize the Conv2DTranspose upsampling layers."""
-        # TODO: test that running this method changes the weights and biases
         for index, layer in enumerate(self.upsampling_layers):
             if index > 0:  # we ignore the PixelShuffle
                 if isinstance(layer, nn.ConvTranspose2d):
-                    torch.nn.init.xavier_uniform_(layer.weight, gain=1.0)
+                    torch.nn.init.xavier_uniform_(layer.weight, gain=0.01)
                     torch.nn.init.zeros_(layer.bias)
                 elif isinstance(layer, nn.BatchNorm2d):
                     torch.nn.init.constant_(layer.weight, 1.0)
@@ -261,16 +271,36 @@ class HeatmapTracker(BaseSupervisedTracker):
 
     def forward(
         self,
-        images: TensorType["batch", "frames", "channels":3, "image_height", "image_width"],
+        images: Union[
+            TensorType["batch", "channels":3, "image_height", "image_width"],
+            TensorType["batch", "views", "channels":3, "image_height", "image_width"],
+        ]
     ) -> TensorType["num_valid_outputs", "num_keypoints", "heatmap_height", "heatmap_width"]:
         """Forward pass through the network."""
         # we get one representation for each desired output.
-        representations = self.get_representations(images)
-        heatmaps = self.heatmaps_from_representations(representations)
+        shape = images.shape
+
+        # if len(shape) > 4 we assume we have multiple views and need to combine images across
+        # batch/views before passing to network, then we reshape
+        if len(shape) > 4:
+            images = images.reshape(-1, shape[-3], shape[-2], shape[-1])
+            representations = self.get_representations(images)
+            heatmaps = self.heatmaps_from_representations(representations)
+            heatmaps = heatmaps.reshape(shape[0], -1, heatmaps.shape[-2], heatmaps.shape[-1])
+        else:
+            representations = self.get_representations(images)
+            heatmaps = self.heatmaps_from_representations(representations)
+
         # softmax temp stays 1 here; to modify for model predictions, see constructor
         return spatial_softmax2d(heatmaps, temperature=torch.tensor([1.0]))
 
-    def get_loss_inputs_labeled(self, batch_dict: HeatmapLabeledBatchDict) -> dict:
+    def get_loss_inputs_labeled(
+        self,
+        batch_dict: Union[
+            HeatmapLabeledBatchDict,
+            MultiviewHeatmapLabeledBatchDict,
+        ],
+    ) -> dict:
         """Return predicted heatmaps and their softmaxes (estimated keypoints)."""
         # images -> heatmaps
         predicted_heatmaps = self.forward(batch_dict["images"])
@@ -289,7 +319,11 @@ class HeatmapTracker(BaseSupervisedTracker):
 
     def predict_step(
         self,
-        batch_dict: Union[HeatmapLabeledBatchDict, UnlabeledBatchDict],
+        batch_dict: Union[
+            HeatmapLabeledBatchDict,
+            MultiviewHeatmapLabeledBatchDict,
+            UnlabeledBatchDict,
+        ],
         batch_idx: int,
         return_heatmaps: Optional[bool] = False,
     ) -> Union[

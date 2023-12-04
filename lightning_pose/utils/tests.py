@@ -8,7 +8,7 @@ from lightning_pose.utils.predictions import PredictionHandler
 from lightning_pose.utils.scripts import get_loss_factories, get_model
 
 
-def run_model_test(cfg, data_module, video_dataloader, trainer, remove_logs_fn):
+def run_model_test(cfg, data_module, video_dataloader, trainer, remove_logs_fn, video_list=None):
     """Helper function to simplify unit tests which run different models."""
 
     # build loss factory which orchestrates different losses
@@ -37,7 +37,13 @@ def run_model_test(cfg, data_module, video_dataloader, trainer, remove_logs_fn):
         pred_handler(preds=labeled_preds)
 
         # predict on unlabeled video
-        trainer.predict(model=model, dataloaders=video_dataloader, return_predictions=True)
+        if video_dataloader is not None:
+            unlabeled_preds = trainer.predict(
+                model=model, dataloaders=video_dataloader, return_predictions=True)
+            if video_list is not None:
+                pred_handler = PredictionHandler(
+                    cfg=cfg, data_module=data_module, video_file=video_list[0])
+                pred_handler(preds=unlabeled_preds)
 
     finally:
 

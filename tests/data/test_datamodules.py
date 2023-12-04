@@ -2,7 +2,6 @@
 
 import pytest
 import torch
-from lightning.pytorch.utilities import CombinedLoader
 
 
 def test_base_datamodule(cfg, base_data_module):
@@ -55,6 +54,32 @@ def test_heatmap_datamodule(cfg, heatmap_data_module):
         im_width_ds,
     )
     assert batch["heatmaps"].shape[2:] == heatmap_data_module.dataset.output_shape
+
+    # cleanup
+    del batch
+
+
+def test_multiview_heatmap_datamodule(cfg_multiview, multiview_heatmap_data_module):
+
+    im_height = cfg_multiview.data.image_resize_dims.height
+    im_width = cfg_multiview.data.image_resize_dims.width
+    im_height_ds = im_height / (2 ** cfg_multiview.data.downsample_factor)
+    im_width_ds = im_width / (2 ** cfg_multiview.data.downsample_factor)
+    train_size = multiview_heatmap_data_module.train_batch_size
+    num_targets = multiview_heatmap_data_module.dataset.num_targets
+    num_view = multiview_heatmap_data_module.dataset.num_views
+
+    # check batch properties
+    batch = next(iter(multiview_heatmap_data_module.train_dataloader()))
+    assert batch["images"].shape == (train_size, num_view, 3, im_height, im_width)
+    assert batch["keypoints"].shape == (train_size, num_targets)
+    assert batch["heatmaps"].shape == (
+        train_size,
+        int(num_targets / 2),
+        im_height_ds,
+        im_width_ds
+    )
+    assert batch["heatmaps"].shape[2:] == multiview_heatmap_data_module.dataset.output_shape
 
     # cleanup
     del batch
@@ -122,8 +147,10 @@ def test_base_data_module_combined(cfg, base_data_module_combined):
     train_size_unlabeled = base_data_module_combined.dali_config["context"]["train"]["batch_size"]
     num_targets = base_data_module_combined.dataset.num_targets
 
-    loader = CombinedLoader(base_data_module_combined.train_dataloader())
+    loader = base_data_module_combined.train_dataloader()
     batch = next(iter(loader))
+    # batch is tuple as of lightning 2.0.9
+    batch = batch[0] if isinstance(batch, tuple) else batch
     assert list(batch.keys())[0] == "labeled"
     assert list(batch.keys())[1] == "unlabeled"
     assert list(batch["labeled"].keys()) == ["images", "keypoints", "idxs", "bbox"]
@@ -148,8 +175,10 @@ def test_heatmap_data_module_combined(cfg, heatmap_data_module_combined):
     train_size_unlabel = heatmap_data_module_combined.dali_config["context"]["train"]["batch_size"]
     num_targets = heatmap_data_module_combined.dataset.num_targets
 
-    loader = CombinedLoader(heatmap_data_module_combined.train_dataloader())
+    loader = heatmap_data_module_combined.train_dataloader()
     batch = next(iter(loader))
+    # batch is tuple as of lightning 2.0.9
+    batch = batch[0] if isinstance(batch, tuple) else batch
     assert list(batch.keys())[0] == "labeled"
     assert list(batch.keys())[1] == "unlabeled"
     assert list(batch["labeled"].keys()) == ["images", "keypoints", "idxs", "bbox", "heatmaps"]
