@@ -99,8 +99,8 @@ class DynamicPipeline(BaseTrackingDataset):
             predicted_keypoints, confidence = self.detector_model.run_subpixelmaxima(predicted_heatmaps)
             # bounding box coords -> original image coords; assume no cropping for detector
             predicted_keypoints = predicted_keypoints.reshape((-1,2))  # x,y format
-            predicted_keypoints[:, 0] *= example_dict['bbox'][-1] / example_dict['images'].shape[-1]  # x coords
-            predicted_keypoints[:, 1] *= example_dict['bbox'][-2] / example_dict['images'].shape[-2]  # y coords
+            predicted_keypoints[:, 0] *= example_dict['bbox'][-1] / ds_images.shape[-1]  # x coords
+            predicted_keypoints[:, 1] *= example_dict['bbox'][-2] / ds_images.shape[-2]  # y coords
         # use predicted keypoints to get crop parameters
         crop_size = 200  # heuristic, to be replaced, crop this many px around centroid
         centroid = predicted_keypoints[self.keypoint_for_com].round().to(torch.int)
