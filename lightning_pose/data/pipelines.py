@@ -10,6 +10,7 @@ from lightning_pose.data.utils import (
     MultiviewHeatmapLabeledExampleDict,
     generate_heatmaps,
 )
+from torchtyping import TensorType
 
 _TORCH_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -33,6 +34,7 @@ class DynamicPipeline(BaseTrackingDataset):
             do_context=do_context,
         )
         self.resized_dims = (cfg.data.image_resize_dims.height, cfg.data.image_resize_dims.width)
+        self.posture_resize = tchv2.Resize(self.resized_dims, antialias=True)
         self.downsample_factor = cfg.data.downsample_factor
         self.output_sigma = 1.25  # should be sigma/2 ^downsample factor
         self.uniform_heatmaps = uniform_heatmaps
@@ -104,10 +106,50 @@ class DynamicPipeline(BaseTrackingDataset):
         # use predicted keypoints to get crop parameters
         crop_size = 200  # heuristic, to be replaced, crop this many px around centroid
         centroid = predicted_keypoints[self.keypoint_for_com].round().to(torch.int)
-        # replace image with cropped version (automatically pads image with 0s)
-        example_dict['images'] = tchv2.functional.crop(example_dict['images'], centroid[1]-crop_size,
-                   centroid[0]-crop_size, 2*crop_size, 2*crop_size)  # y, x, h, w order
+        # replace image with cropped version (automatically pads image with 0s) and resize
+        example_dict['images'] = self.posture_resize(tchv2.functional.crop(example_dict['images'], centroid[1]-crop_size,
+                   centroid[0]-crop_size, 2*crop_size, 2*crop_size))  # y, x, h, w order
         # update image bbox
         example_dict['bbox'] = torch.tensor([centroid[0]-crop_size, centroid[1]-crop_size, 2*crop_size, 2*crop_size])  # x, y, h, w order
-        # keypoints and/or heatmaps?
+        # create heatmaps, incorporates keypoint coordinate transform without overwriting dict entries
+        example_dict["heatmaps"] = self.compute_heatmap(example_dict)
         return example_dict
+
+    def compute_heatmap(
+        self, example_dict: BaseLabeledExampleDict
+    ) -> TensorType["num_keypoints", "heatmap_height", "heatmap_width"]:
+        """Compute 2D heatmaps from arbitrary (x, y) coordinates."""
+
+        # reshape
+        keypoints = example_dict["keypoints"].reshape(self.num_keypoints, 2)
+
+        # convert x coords from original to cropped coords (bbox x,y,h,w)
+        keypoints[:,0] -= example_dict['bbox'][0]
+        keypoints[:,0] *= example_dict['images'].shape[-1] / example_dict['bbox'][3]
+        keypoints[:,1] -= example_dict['bbox'][1]
+        keypoints[:,1] *= example_dict['images'].shape[-2] / example_dict['bbox'][2]
+
+        # introduce new nans where data augmentation has moved the keypoint out of the original
+        # frame
+        new_nans = torch.logical_or(
+            torch.lt(keypoints[:, 0], torch.tensor(0)),
+            torch.lt(keypoints[:, 1], torch.tensor(0)),
+        )
+        new_nans = torch.logical_or(
+            new_nans, torch.ge(keypoints[:, 0], torch.tensor(self.width))
+        )
+        new_nans = torch.logical_or(
+            new_nans, torch.ge(keypoints[:, 1], torch.tensor(self.height))
+        )
+        keypoints[new_nans, :] = torch.nan
+
+        y_heatmap = generate_heatmaps(
+            keypoints=keypoints.unsqueeze(0),  # add batch dim
+            height=self.height,
+            width=self.width,
+            output_shape=self.output_shape,
+            sigma=self.output_sigma,
+            uniform_heatmaps=self.uniform_heatmaps,
+        )
+
+        return y_heatmap[0]
