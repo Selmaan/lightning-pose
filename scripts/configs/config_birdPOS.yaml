@@ -56,7 +56,7 @@ training:
   # default- resizing only
   # dlc- imgaug pipeline implemented in DLC 2.0 package
   # dlc-top-down- dlc augmentations plus vertical and horizontal flips
-  imgaug: dlc-top-down
+  imgaug: dlc
   # batch size of labeled data during training
   train_batch_size: 16
   # batch size of labeled data during validation
