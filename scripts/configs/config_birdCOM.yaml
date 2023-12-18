@@ -37,9 +37,9 @@ training:
   # batch size of labeled data during test
   test_batch_size: 32
   # fraction of labeled data used for training
-  train_prob: 0.8
+  train_prob: 0.95
   # fraction of labeled data used for validation (remaining used for test)
-  val_prob: 0.1
+  val_prob: 0.05
   # <=1 - fraction of total train frames (determined by `train_prob`) used for training
   # >1 - number of total train frames used for training
   train_frames: 1
@@ -53,7 +53,7 @@ training:
   unfreezing_epoch: 10
   # max training epochs; training may exit before due to early stopping
   min_epochs: 100
-  max_epochs: 750
+  max_epochs: 200
   # frequency to log training metrics (one step is one batch)
   log_every_n_steps: 10
   # frequency to log validation metrics
@@ -82,7 +82,7 @@ model:
   # resnet50_human_jhmdb | resnet50_human_res_rle | resnet50_human_top_res
   # efficientnet_b0 | efficientnet_b1 | efficientnet_b2
   # vit_b_sam | vit_h_sam
-  backbone: efficientnet_b2
+  backbone: efficientnet_b0
   # prediction mode: regression | heatmap | heatmap_mhcrnn (context)
   model_type: heatmap
   # which heatmap loss to use
