@@ -63,17 +63,17 @@ class DynamicPipeline(HeatmapTracker):
         else:
             # unlabeled dali video dataloaders
             images = batch_dict["frames"]
+        # make a new batch dict (need batch dict with downsized ims for bbox conversion to work)
+        crop_dict = batch_dict.copy()
         with torch.no_grad():
             # downsize images
-            ds_images = self.detector_resize(images)
+            crop_dict["images"] = self.detector_resize(images)
             # images -> heatmaps
-            predicted_heatmaps = self.detector_model(ds_images)
+            predicted_heatmaps = self.detector_model(crop_dict["images"])
             # heatmaps -> keypoints
             predicted_keypoints, confidence = self.detector_model.run_subpixelmaxima(predicted_heatmaps)
             # convert from downsized to original pixel coordinates
-            # TODO: This breaks when image is augmented by resizing/cropping/rotating!
-            predicted_keypoints = convert_bbox_coords(batch_dict, predicted_keypoints)
-        return predicted_keypoints
+        return convert_bbox_coords(crop_dict, predicted_keypoints)
 
     def crop_batch(
             self,
@@ -90,7 +90,7 @@ class DynamicPipeline(HeatmapTracker):
             images = batch_dict["frames"]
         # create new dict, initialize cropped image array
         crop_dict = batch_dict.copy()
-        crop_ims = torch.zeros_like(images)
+        crop_ims = self.posture_resize(images)  # this is just pre-allocation for array
         # loop over images
         for i in range(images.shape[0]):
             # crop (padding w/ zeros) and resize each image using centroid and size data
