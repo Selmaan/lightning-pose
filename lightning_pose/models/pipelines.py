@@ -7,6 +7,7 @@ import torchvision.transforms.v2 as tchv2
 from lightning_pose.utils.predictions import load_model_from_checkpoint
 from lightning_pose.data.utils import HeatmapLabeledBatchDict, UnlabeledBatchDict
 from lightning_pose.models.base import convert_bbox_coords
+from lightning_pose.losses.factory import LossFactory
 
 class DynamicPipeline(HeatmapTracker):
     """DynamicPipeline is a HeatMapTracker subclass, which takes standard full-frame batch_dict inputs
