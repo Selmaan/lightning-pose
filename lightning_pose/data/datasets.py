@@ -192,7 +192,7 @@ class BaseTrackingDataset(torch.utils.data.Dataset):
             images=transformed_images,  # shape (3, img_height, img_width) or (5, 3, H, W)
             keypoints=torch.from_numpy(transformed_keypoints),  # shape (n_targets,)
             idxs=idx,
-            bbox=torch.tensor([0, 0, image.height, image.width])  # x,y,h,w of bounding box
+            bbox=torch.tensor([0, 0, transformed_images.shape[-2], transformed_images.shape[-1]])  # x,y,h,w of bounding box
         )
 
 
@@ -318,7 +318,7 @@ class HeatmapDataset(BaseTrackingDataset):
         return example_dict
 
 
-class DynamicDataset(HeatmapDataset):
+class DynamicDataset(BaseTrackingDataset):
     """Dynamic dataset used to load data for dynamic pipeline"""
 
     def __init__(
@@ -334,11 +334,11 @@ class DynamicDataset(HeatmapDataset):
             csv_path=cfg.data.csv_file,
             header_rows=header_rows,
             imgaug_transform=imgaug_transform,
-            downsample_factor=cfg.data.downsample_factor,
-            uniform_heatmaps=uniform_heatmaps,
             do_context=do_context,
         )
         self.resized_dims = (cfg.data.image_resize_dims.height, cfg.data.image_resize_dims.width)
+        self.downsample_factor = cfg.data.downsample_factor
+        self.uniform_heatmaps = uniform_heatmaps
         if self.height % 128 != 0 or self.height % 128 != 0:
             print(
                 "image dimensions (after transformation) must be repeatably "
