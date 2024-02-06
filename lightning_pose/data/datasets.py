@@ -192,7 +192,7 @@ class BaseTrackingDataset(torch.utils.data.Dataset):
             images=transformed_images,  # shape (3, img_height, img_width) or (5, 3, H, W)
             keypoints=torch.from_numpy(transformed_keypoints),  # shape (n_targets,)
             idxs=idx,
-            bbox=torch.tensor([0, 0, transformed_images.shape[-2], transformed_images.shape[-1]])  # x,y,h,w of bounding box
+            bbox=torch.tensor([0, 0, image.height, image.width])  # x,y,h,w of bounding box
         )
 
 
