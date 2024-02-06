@@ -5,7 +5,7 @@ from typing import Tuple, Optional, Union
 from torchtyping import TensorType
 import torchvision.transforms.v2 as tchv2
 from lightning_pose.utils.predictions import load_model_from_checkpoint
-from lightning_pose.data.utils import HeatmapLabeledBatchDict, UnlabeledBatchDict
+from lightning_pose.data.utils import HeatmapLabeledBatchDict, UnlabeledBatchDict, BaseLabeledBatchDict, generate_heatmaps
 from lightning_pose.models.base import convert_bbox_coords
 from lightning_pose.losses.factory import LossFactory
 
@@ -39,7 +39,7 @@ class DynamicPipeline(HeatmapTracker):
         self.com_resized_dims = (cfg.detector.image_resize_dims.height, cfg.detector.image_resize_dims.width)
         self.com_resize = tchv2.Resize(self.com_resized_dims, antialias=True)
 
-        # set up output shape from resize dim TODO: what is this used for? Is this necessary?
+        # set up output shape from resize dim
         self.output_shape = (self.resized_dims[0] // 2**self.downsample_factor,
                              self.resized_dims[1] // 2**self.downsample_factor)
 
@@ -55,7 +55,7 @@ class DynamicPipeline(HeatmapTracker):
 
     def detect_batch(
             self,
-            batch_dict: HeatmapLabeledBatchDict,
+            batch_dict: BaseLabeledBatchDict,
         ) -> TensorType["batch", "num_targets"]:
 
         if "images" in batch_dict.keys():  # can't do isinstance(o, c) on TypedDicts
@@ -78,10 +78,10 @@ class DynamicPipeline(HeatmapTracker):
 
     def crop_batch(
             self,
-            batch_dict: HeatmapLabeledBatchDict,
+            batch_dict: BaseLabeledBatchDict,
             centroids: TensorType["batch", 2],
             crop_size: TensorType["batch", 1],
-        ) -> HeatmapLabeledBatchDict:
+        ) -> BaseLabeledBatchDict:
         """transform images, bbox, and keypoints if present from full to cropped"""
         if "images" in batch_dict.keys():  # can't do isinstance(o, c) on TypedDicts
             # labeled image dataloaders
@@ -109,17 +109,28 @@ class DynamicPipeline(HeatmapTracker):
         crop_dict['bbox'][:,1] = centroids[:,1]-crop_size
         crop_dict['bbox'][:,2] = 2*crop_size
         crop_dict['bbox'][:,3] = 2*crop_size
-        # update keypoints if present
-        if "keypoints" in crop_dict.keys():
-            # convert keypoints to x,y format
-            num_targets = crop_dict['keypoints'].shape[1]
-            num_keypoints = num_targets // 2
-            kp = crop_dict['keypoints'].reshape((-1, num_keypoints, 2))
-            # convert x,y coords from original to cropped coords
-            kp[:, :, 0] -= crop_dict['bbox'][:,0].unsqueeze(1)  # remove x offset
-            kp[:, :, 0] *= self.resized_dims[1] / crop_dict['bbox'][:, 3].unsqueeze(1)  # rescale x coords by width
-            kp[:, :, 1] -= crop_dict['bbox'][:,1].unsqueeze(1)  # remove y offset
-            kp[:, :, 1] *= self.resized_dims[0] / crop_dict['bbox'][:, 2].unsqueeze(1)  # rescale y coords by height
+        return crop_dict
+
+    def make_heatmaps(self, crop_dict: BaseLabeledBatchDict) -> HeatmapLabeledBatchDict:
+        # convert keypoints to x,y format
+        num_targets = crop_dict['keypoints'].shape[1]
+        num_keypoints = num_targets // 2
+        kp = crop_dict['keypoints'].reshape((-1, num_keypoints, 2))
+        # convert x,y coords from original to cropped coords
+        kp[:, :, 0] -= crop_dict['bbox'][:,0].unsqueeze(1)  # remove x offset
+        kp[:, :, 0] *= self.resized_dims[1] / crop_dict['bbox'][:, 3].unsqueeze(1)  # rescale x coords by width
+        kp[:, :, 1] -= crop_dict['bbox'][:,1].unsqueeze(1)  # remove y offset
+        kp[:, :, 1] *= self.resized_dims[0] / crop_dict['bbox'][:, 2].unsqueeze(1)  # rescale y coords by height
+        # make heatmaps from keypoints in cropped coords
+        heatmaps = generate_heatmaps(
+            keypoints=kp,
+            height=self.resized_dims[0],
+            width=self.resized_dims[1],
+            output_shape=self.output_shape,
+            sigma=1.25, # this is hardcoded elsewhere, keeping here for consistency
+        )
+        crop_dict['keypoints'] = kp.reshape((-1, num_targets))
+        crop_dict['heatmaps'] = heatmaps
         return crop_dict
 
     def get_crop_params(
@@ -140,8 +151,11 @@ class DynamicPipeline(HeatmapTracker):
         # get all detector predictions
         predicted_keypoints = self.detect_batch(batch_dict)
         centroids, crop_size = self.get_crop_params(predicted_keypoints)
-        # crop images and update bbox, also keypoints if applicable
+        # crop images and update bbox
         crop_dict = self.crop_batch(batch_dict, centroids, crop_size)
+        # Update keypoints and make heatmaps if available
+        if "keypoints" in crop_dict.keys():
+            crop_dict = self.make_heatmaps(crop_dict)
         return crop_dict
 
     def get_loss_inputs_labeled(
